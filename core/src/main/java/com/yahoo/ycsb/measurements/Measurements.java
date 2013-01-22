@@ -20,6 +20,7 @@ package com.yahoo.ycsb.measurements;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Properties;
+import java.util.concurrent.ConcurrentHashMap;
 
 import com.yahoo.ycsb.measurements.exporter.MeasurementsExporter;
 
@@ -56,7 +57,7 @@ public class Measurements
 		return singleton;
 	}
 
-	HashMap<String,OneMeasurement> data;
+    ConcurrentHashMap<String,OneMeasurement> data;
 	boolean histogram=true;
 
 	private Properties _props;
@@ -66,7 +67,7 @@ public class Measurements
        */
 	public Measurements(Properties props)
 	{
-		data=new HashMap<String,OneMeasurement>();
+		data=new ConcurrentHashMap<String, OneMeasurement>();
 		
 		_props=props;
 		
@@ -135,21 +136,37 @@ public class Measurements
 			}
 		}
 		data.get(operation).reportReturnCode(code);
-	}
-	
-  /**
-   * Export the current measurements to a suitable format.
-   * 
-   * @param exporter Exporter representing the type of format to write to.
-   * @throws IOException Thrown if the export failed.
-   */
-  public void exportMeasurements(MeasurementsExporter exporter) throws IOException
-  {
-    for (OneMeasurement measurement : data.values())
-    {
-      measurement.exportMeasurements(exporter);
     }
-  }
+
+    /**
+     * Export the current measurements to a suitable format.
+     *
+     * @param exporter Exporter representing the type of format to write to.
+     * @throws IOException Thrown if the export failed.
+     */
+    public void exportMeasurements(MeasurementsExporter exporter) throws IOException
+    {
+     for (OneMeasurement measurement : data.values())
+      {
+        measurement.exportMeasurements(exporter);
+      }
+    }
+
+    public void exportPartMeasurements(MeasurementsExporter exporter) throws IOException
+    {
+        for (OneMeasurement measurement : data.values())
+        {
+            measurement.exportPartMeasurements(exporter);
+        }
+    }
+
+    public void exportFinalMeasurements(MeasurementsExporter exporter) throws IOException
+    {
+        for (OneMeasurement measurement : data.values())
+        {
+            measurement.exportFinalMeasurements(exporter);
+        }
+    }
 	
       /**
        * Return a one line summary of the measurements.

@@ -68,6 +68,8 @@ public class OneMeasurementTimeSeries extends OneMeasurement
 	int min=-1;
 	int max=-1;
 
+    int first = 0;
+
 	private HashMap<Integer, int[]> returncodes;
 	
 	public OneMeasurementTimeSeries(String name, Properties props)
@@ -126,31 +128,54 @@ public class OneMeasurementTimeSeries extends OneMeasurement
 	}
 
 
-  @Override
-  public void exportMeasurements(MeasurementsExporter exporter) throws IOException
-  {
-    checkEndOfUnit(true);
+    private void exportStats(MeasurementsExporter exporter) throws IOException {
+        exporter.write(getName(), "Operations", operations);
+        exporter.write(getName(), "AverageLatency(us)", (((double) totallatency) / ((double) operations)));
+        exporter.write(getName(), "MinLatency(us)", min);
+        exporter.write(getName(), "MaxLatency(us)", max);
 
-    exporter.write(getName(), "Operations", operations);
-    exporter.write(getName(), "AverageLatency(us)", (((double)totallatency)/((double)operations)));
-    exporter.write(getName(), "MinLatency(us)", min);
-    exporter.write(getName(), "MaxLatency(us)", max);
+        //TODO: 95th and 99th percentile latency
 
-    //TODO: 95th and 99th percentile latency
-
-    for (Integer I : returncodes.keySet())
-    {
-      int[] val=returncodes.get(I);
-      exporter.write(getName(), "Return="+I, val[0]);
-    }     
-
-    for (SeriesUnit unit : _measurements)
-    {
-      exporter.write(getName(), Long.toString(unit.time), unit.average);
+        for (Integer I : returncodes.keySet())
+        {
+            int[] val = returncodes.get(I);
+            exporter.write(getName(), "Return=" + I, val[0]);
+        }
     }
-  }
-	
-	@Override
+
+    @Override
+    public void exportMeasurements(MeasurementsExporter exporter) throws IOException
+    {
+        checkEndOfUnit(true);
+        exportStats(exporter);
+
+        for (SeriesUnit unit : _measurements)
+        {
+            exporter.write(getName(), Long.toString(unit.time), unit.average);
+        }
+    }
+
+    @Override
+    public void exportPartMeasurements(MeasurementsExporter exporter) throws IOException
+    {
+        int last = _measurements.size();
+        for(int i = first; i < last; i++)
+        {
+            SeriesUnit unit = _measurements.get(i);
+            exporter.write(getName(), Long.toString(unit.time), unit.average);
+        }
+        first = last;
+    }
+
+    @Override
+    public void exportFinalMeasurements(MeasurementsExporter exporter) throws IOException
+    {
+        checkEndOfUnit(true);
+        exportPartMeasurements(exporter);
+        exportStats(exporter);
+    }
+
+    @Override
 	public void reportReturnCode(int code) {
 		Integer Icode=code;
 		if (!returncodes.containsKey(Icode))
@@ -164,7 +189,8 @@ public class OneMeasurementTimeSeries extends OneMeasurement
 	}
 
 	@Override
-	public String getSummary() {
+	public String getSummary()
+    {
 		if (windowoperations==0)
 		{
 			return "";
