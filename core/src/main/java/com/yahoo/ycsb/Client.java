@@ -24,6 +24,7 @@ import java.util.*;
 
 import com.yahoo.ycsb.measurements.Measurements;
 import com.yahoo.ycsb.measurements.exporter.MeasurementsExporter;
+import com.yahoo.ycsb.measurements.exporter.NotBufferedTextMeasurementsExporter;
 import com.yahoo.ycsb.measurements.exporter.TextMeasurementsExporter;
 
 //import org.apache.log4j.BasicConfigurator;
@@ -148,9 +149,10 @@ class ClientThread extends Thread
 	int _threadcount;
 	Object _workloadstate;
 	Properties _props;
+    long _runtime = 0;
 
 
-	/**
+    /**
 	 * Constructor.
 	 * 
 	 * @param db the DB implementation to use
@@ -220,7 +222,8 @@ class ClientThread extends Thread
 		{
 		  // do nothing.
 		}
-		
+
+        long starttime = System.currentTimeMillis();
 		try
 		{
 			if (_dotransactions)
@@ -257,6 +260,7 @@ class ClientThread extends Thread
 
 						}
 					}
+                    _runtime = System.currentTimeMillis() - starttime;
 				}
 			}
 			else
@@ -292,6 +296,7 @@ class ClientThread extends Thread
 							}
 						}
 					}
+                    _runtime = System.currentTimeMillis() - starttime;
 				}
 			}
 		}
@@ -313,6 +318,92 @@ class ClientThread extends Thread
 			return;
 		}
 	}
+
+    public long getRuntime()
+    {
+        return _runtime;
+    }
+}
+
+/**
+ * A thread to periodically export measurements by exporter.
+ */
+class ExportMeasurementsThread extends Thread
+{
+    private Vector<Thread> _threads;
+    private MeasurementsExporter _exporter;
+    private long _sleeptime; // the interval for exporting measurements
+
+    public ExportMeasurementsThread(Vector<Thread> threads, MeasurementsExporter exporter, long exportmeasurementsinterval) throws FileNotFoundException {
+        _threads = threads;
+        this._exporter = exporter;
+        this._sleeptime = exportmeasurementsinterval;
+    }
+
+    public void exportOverall()
+    {
+        try {
+            Measurements.getMeasurements().exportFinalMeasurements(_exporter);
+            long opcount = 0;
+            long runtime = 0;
+            for (Thread t : _threads) {
+                ClientThread ct = (ClientThread) t;
+                opcount += ct.getOpsDone();
+                if (runtime < ct.getRuntime()) {
+                    runtime = ct.getRuntime();
+                }
+            }
+            _exporter.write("OVERALL", "RunTime(ms)", runtime);
+            _exporter.write("OVERALL", "Operations", opcount);
+            _exporter.write("OVERALL", "Throughput(ops/sec)", 1000.0 * opcount / runtime);
+            _exporter.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+            e.printStackTrace(System.out);
+        }
+    }
+
+    /**
+     * Run and periodically report export measurements to file.
+     */
+    public void run()
+    {
+        boolean alldone;
+        do
+        {
+            try
+            {
+                sleep(_sleeptime);
+            }
+            catch (InterruptedException e)
+            {
+                //do nothing
+            }
+
+            alldone = true;
+
+            //terminate this thread when all the worker threads are done
+            for (Thread t : _threads)
+            {
+                if (t.getState() != Thread.State.TERMINATED)
+                {
+                    alldone = false;
+                }
+            }
+
+            try
+            {
+                Measurements.getMeasurements().exportPartMeasurements(_exporter);
+            }
+            catch (IOException e)
+            {
+                e.printStackTrace();
+                e.printStackTrace(System.out);
+            }
+        }
+        while (!alldone);
+        exportOverall();
+    }
 }
 
 /**
@@ -320,6 +411,7 @@ class ClientThread extends Thread
  */
 public class Client
 {
+    public static final String EXPORT_MEASUREMENTS_INTERVAL = "exportmeasurementsinterval";
 
 	public static final String OPERATION_COUNT_PROPERTY="operationcount";
 
@@ -378,59 +470,71 @@ public class Client
 		return true;
 	}
 
+    public static MeasurementsExporter getExporter(Properties props) throws FileNotFoundException {
+        MeasurementsExporter exporter = null;
+        // if no destination file is provided the results will be written to stdout
+        OutputStream out;
+        String exportFile = props.getProperty("exportfile");
+        if (exportFile == null)
+        {
+            out = System.out;
+        } else
+        {
+            out = new FileOutputStream(exportFile);
+        }
 
-	/**
-	 * Exports the measurements to either sysout or a file using the exporter
-	 * loaded from conf.
-	 * @throws IOException Either failed to write to output stream or failed to close it.
-	 */
-	private static void exportMeasurements(Properties props, int opcount, long runtime)
-			throws IOException
-	{
-		MeasurementsExporter exporter = null;
-		try
-		{
-			// if no destination file is provided the results will be written to stdout
-			OutputStream out;
-			String exportFile = props.getProperty("exportfile");
-			if (exportFile == null)
-			{
-				out = System.out;
-			} else
-			{
-				out = new FileOutputStream(exportFile);
-			}
+        // if no exporter is provided the default text one will be used
+        String defaultexporter;
+        long exporterinterval = Long.parseLong(props.getProperty(EXPORT_MEASUREMENTS_INTERVAL, "0"));
+        if(exporterinterval > 0)
+        {
+            defaultexporter = NotBufferedTextMeasurementsExporter.class.getName();
+        }
+        else
+        {
+            defaultexporter = TextMeasurementsExporter.class.getName();
+        }
+        String exporterStr = props.getProperty("exporter", defaultexporter);
+        try
+        {
+            exporter = (MeasurementsExporter) Class.forName(exporterStr).getConstructor(OutputStream.class).newInstance(out);
+        } catch (Exception e)
+        {
+            System.err.println("Could not find exporter " + exporterStr + ", will use default text reporter.");
+            e.printStackTrace();
+            exporter = new TextMeasurementsExporter(out);
+        }
+        return exporter;
+    }
 
-			// if no exporter is provided the default text one will be used
-			String exporterStr = props.getProperty("exporter", "com.yahoo.ycsb.measurements.exporter.TextMeasurementsExporter");
-			try
-			{
-				exporter = (MeasurementsExporter) Class.forName(exporterStr).getConstructor(OutputStream.class).newInstance(out);
-			} catch (Exception e)
-			{
-				System.err.println("Could not find exporter " + exporterStr
-						+ ", will use default text reporter.");
-				e.printStackTrace();
-				exporter = new TextMeasurementsExporter(out);
-			}
+    /**
+     * Exports the measurements to either sysout or a file using the exporter
+     * loaded from conf.
+     * @throws IOException Either failed to write to output stream or failed to close it.
+     */
+    private static void exportMeasurements(MeasurementsExporter exporter, int opcount, long runtime)
+            throws IOException
+    {
+        try
+        {
+            exporter.write("OVERALL", "RunTime(ms)", runtime);
+            double throughput = 1000.0 * ((double) opcount) / ((double) runtime);
+            exporter.write("OVERALL", "Throughput(ops/sec)", throughput);
 
-			exporter.write("OVERALL", "RunTime(ms)", runtime);
-			double throughput = 1000.0 * ((double) opcount) / ((double) runtime);
-			exporter.write("OVERALL", "Throughput(ops/sec)", throughput);
-
-			Measurements.getMeasurements().exportMeasurements(exporter);
-		} finally
-		{
-			if (exporter != null)
-			{
-				exporter.close();
-			}
-		}
-	}
+            Measurements.getMeasurements().exportMeasurements(exporter);
+        }
+        finally
+        {
+            if (exporter != null)
+            {
+                exporter.close();
+            }
+        }
+    }
 	
 	@SuppressWarnings("unchecked")
-	public static void main(String[] args)
-	{
+	public static void main(String[] args) throws FileNotFoundException
+    {
 		String dbname;
 		Properties props=new Properties();
 		Properties fileprops=new Properties();
@@ -741,61 +845,101 @@ public class Client
 
 		for (Thread t : threads)
 		{
-			t.start();
-		}
-		
-    Thread terminator = null;
-    
-    if (maxExecutionTime > 0) {
-      terminator = new TerminatorThread(maxExecutionTime, threads, workload);
-      terminator.start();
-    }
-    
-    int opsDone = 0;
+            t.start();
+        }
 
-		for (Thread t : threads)
-		{
-			try
-			{
-				t.join();
-				opsDone += ((ClientThread)t).getOpsDone();
-			}
-			catch (InterruptedException e)
-			{
-			}
-		}
+        Thread terminator = null;
 
-		long en=System.currentTimeMillis();
-		
-		if (terminator != null && !terminator.isInterrupted()) {
-      terminator.interrupt();
-    }
+        if (maxExecutionTime > 0)
+        {
+            terminator = new TerminatorThread(maxExecutionTime, threads, workload);
+            terminator.start();
+        }
 
-		if (status)
-		{
-			statusthread.interrupt();
-		}
+        MeasurementsExporter exporter = getExporter(props);
 
-		try
-		{
-			workload.cleanup();
-		}
-		catch (WorkloadException e)
-		{
-			e.printStackTrace();
-			e.printStackTrace(System.out);
-			System.exit(0);
-		}
+        long exportmeasurementsinterval = Long.parseLong(props.getProperty(EXPORT_MEASUREMENTS_INTERVAL, "0"));
 
-		try
-		{
-			exportMeasurements(props, opsDone, en - st);
-		} catch (IOException e)
-		{
-			System.err.println("Could not export measurements, error: " + e.getMessage());
-			e.printStackTrace();
-			System.exit(-1);
-		}
+        ExportMeasurementsThread exportmeasurementsthread = null;
+        if(exportmeasurementsinterval > 0)
+        {
+            exportmeasurementsthread = new ExportMeasurementsThread(threads, exporter, exportmeasurementsinterval);
+            exportmeasurementsthread.start();
+
+            //add hook to export measurements on shutdown
+            final ExportMeasurementsThread emt = exportmeasurementsthread;
+            Thread hook = new Thread()
+            {
+                public void run()
+                {
+                    emt.exportOverall();
+                }
+            };
+            Runtime.getRuntime().addShutdownHook(hook);
+        }
+
+        int opsDone = 0;
+
+        for (Thread t : threads)
+        {
+            try
+            {
+                t.join();
+                opsDone += ((ClientThread) t).getOpsDone();
+            } catch (InterruptedException e)
+            {
+                //do nothing
+            }
+        }
+
+        long en = System.currentTimeMillis();
+
+        if (terminator != null && !terminator.isInterrupted())
+        {
+            terminator.interrupt();
+        }
+
+        if (status)
+        {
+            statusthread.interrupt();
+        }
+
+        try
+        {
+            workload.cleanup();
+        }
+        catch (WorkloadException e)
+        {
+            e.printStackTrace();
+            e.printStackTrace(System.out);
+            System.exit(0);
+        }
+
+
+        if (exportmeasurementsinterval > 0)
+        {
+            try
+            {
+                exportmeasurementsthread.join();
+            }
+            catch (InterruptedException e)
+            {
+                e.printStackTrace();
+                e.printStackTrace(System.out);
+            }
+        } else
+        {
+            try
+            {
+                exportMeasurements(exporter, opsDone, en - st);
+            }
+            catch (IOException e)
+            {
+                System.err.println("Could not export measurements, error: " + e.getMessage());
+                e.printStackTrace();
+                System.exit(-1);
+            }
+        }
 
 		System.exit(0);
 	}
